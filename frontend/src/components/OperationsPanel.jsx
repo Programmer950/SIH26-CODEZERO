@@ -1,0 +1,14 @@
+import { useState } from 'react'
+import { Activity, Grid2X2, ShieldAlert, Trash2, Plus, BellRing } from 'lucide-react'
+import Panel from './Panel'
+import { api } from '../lib/api'
+import { useApi } from '../hooks/useApi'
+const arr = x => Array.isArray(x) ? x : x?.items || x?.vehicles || x?.data || []
+export default function OperationsPanel({ activeTab, setActiveTab, refreshMap }) { const [newPlate, setNewPlate] = useState(''); const [busy, setBusy] = useState(false); const black = useApi(api.blacklist, { interval: 15000 }); const heat = useApi(api.heatmap); const matrix = useApi(api.odMatrix); const alerts = useApi(api.alerts, { interval: 10000 })
+ const add = async e => { e.preventDefault(); if (!newPlate) return; setBusy(true); try { await api.addBlacklist({ plate_text: newPlate, plate: newPlate }); setNewPlate(''); black.execute(); refreshMap?.() } finally { setBusy(false) } }
+ const rows = arr(matrix.data); return <Panel title="Operations Console" icon={Activity} side="right" className="ops-panel"><div className="tab-row">{[["heat", Activity], ["flow", Grid2X2], ["watch", ShieldAlert], ["alerts", BellRing]].map(([tab, Icon]) => <button className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)} key={tab}><Icon size={14}/>{tab}</button>)}</div>
+ {activeTab === 'heat' && <div className="analytics-copy"><b>CONGESTION HEATMAP ARMED</b><p>{(heat.data?.features || []).length} density cells are rendered over the city grid in amber.</p><button className="outline" onClick={() => { heat.execute(); refreshMap?.() }}>REFRESH TELEMETRY</button></div>}
+ {activeTab === 'flow' && <div className="matrix">{rows.length ? rows.slice(0, 8).map((r,i) => <div key={i}><span>{r.origin || r.from || r.source || 'ZONE-A'} → {r.destination || r.to || r.target || 'ZONE-B'}</span><b>{r.count || r.volume || r.value || '—'}</b></div>) : <div className="empty-state">NO MATRIX SIGNAL</div>}</div>}
+ {activeTab === 'watch' && <><form className="watch-form" onSubmit={add}><input value={newPlate} onChange={e => setNewPlate(e.target.value.toUpperCase())} placeholder="ADD REGISTRATION"/><button disabled={busy}><Plus size={16}/></button></form><div className="watch-list">{arr(black.data).map((v,i) => { const p=v.plate_text||v.plate||v; return <div key={i}><b>{p}</b><span>{v.reason || 'WATCHLIST'}</span><button onClick={async()=>{await api.removeBlacklist(p);black.execute()}}><Trash2 size={14}/></button></div>})}</div></>}
+ {activeTab === 'alerts' && <div className="watch-list">{arr(alerts.data).map((a,i)=><div key={a.id||i}><b className="text-critical">{a.plate_text||a.plate||'WATCHLIST ALERT'}</b><span>{a.timestamp||a.created_at||a.message||'RECENT SIGNAL'}</span></div>)}{!arr(alerts.data).length&&!alerts.loading&&<div className="empty-state">NO RECENT ALERTS</div>}</div>}
+ </Panel> }

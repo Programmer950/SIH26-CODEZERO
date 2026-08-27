@@ -1,0 +1,7 @@
+import { motion } from 'framer-motion'
+import { Camera, Radio } from 'lucide-react'
+import Panel from './Panel'
+import { api } from '../lib/api'
+import { useApi } from '../hooks/useApi'
+export default function CameraPanel({ camera, onClose }) { const id = camera?.id || camera?.camera_id; const { data, loading } = useApi(() => api.recentFeed(id), { immediate: Boolean(id), interval: 10000 }); const feed = Array.isArray(data) ? data : data?.items || data?.detections || []
+ return <Panel title="Live Camera Feed" icon={Camera} side="right" className="right-panel" onClose={onClose}><div className="camera-heading"><span className="pulse-dot"/><div><b>{camera.name || camera.camera_name || `NODE ${id}`}</b><small>{camera.location_name || camera.address || `${camera.latitude ?? camera.lat}, ${camera.longitude ?? camera.lng}`}</small></div></div><div className="feed-meta"><span>CAM-ID <b>{id}</b></span><span>{loading ? 'SYNCING' : 'LIVE STREAM'}</span></div><div className="feed-list">{feed.length ? feed.map((item, i) => <motion.div initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * .04 }} className="feed-row" key={item.id || i}><b>{item.plate_text || item.plate || 'OCR PENDING'}</b><span>{item.timestamp || item.detected_at || 'JUST NOW'}</span><em>{Math.round((item.confidence || item.ocr_confidence || 0) * ((item.confidence || 0) <= 1 ? 100 : 1))}%</em></motion.div>) : <div className="empty-state"><Radio size={22}/>{loading ? 'Awaiting uplink…' : 'No recent detections'}</div>}</div></Panel> }
