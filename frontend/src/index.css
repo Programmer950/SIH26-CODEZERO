@@ -1,0 +1,161 @@
+@import "tailwindcss";
+
+/* Leaflet CSS override for dark theme */
+.leaflet-container {
+  background: #0d1117;
+}
+
+.leaflet-popup-content-wrapper {
+  background: #111827;
+  color: #e2e8f0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  padding: 0;
+}
+
+.leaflet-popup-content {
+  margin: 0 !important;
+  line-height: 1.5;
+}
+
+.leaflet-popup-tip {
+  background: #111827;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+}
+
+.leaflet-popup-close-button {
+  color: #64748b !important;
+  font-size: 18px !important;
+  padding: 6px 8px 0 0 !important;
+}
+
+.leaflet-popup-close-button:hover {
+  color: #e2e8f0 !important;
+}
+
+/* Structured popup content */
+.map-popup-content {
+  padding: 12px 14px;
+  min-width: 160px;
+}
+
+.map-popup-header {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin-bottom: 2px;
+}
+
+.map-popup-subtext {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.map-popup-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 8px 0;
+}
+
+.map-popup-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.map-popup-label {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.map-popup-val {
+  font-size: 12px;
+  color: #cbd5e1;
+  font-weight: 500;
+}
+
+.map-popup-val-green {
+  font-size: 12px;
+  color: #34d399;
+  font-weight: 600;
+}
+
+.map-popup-val-red {
+  font-size: 12px;
+  color: #f87171;
+  font-weight: 600;
+}
+
+/* Attribution bar blending */
+.leaflet-control-attribution {
+  background: rgba(17, 24, 39, 0.7) !important;
+  color: #475569 !important;
+  font-size: 10px !important;
+}
+
+.leaflet-control-attribution a {
+  color: #64748b !important;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f1219;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a3142;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3b4559;
+}
+
+/* Camera feed placeholder */
+.camera-feed {
+  background: linear-gradient(135deg, #0f1219 0%, #161b27 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.camera-feed::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(255, 255, 255, 0.015) 2px,
+    rgba(255, 255, 255, 0.015) 4px
+  );
+  pointer-events: none;
+}
+
+/* Pulse animation for live indicator */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Tracking animation highlight */
+@keyframes tracking-glow {
+  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
+  70% { box-shadow: 0 0 0 8px rgba(59, 130, 246, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}
+
+.tracking-active {
+  animation: tracking-glow 1.5s ease-in-out;
+}
