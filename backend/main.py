@@ -29,7 +29,7 @@ app.add_middleware(
 
 # Database credentials
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
+    "host": os.getenv("DB_HOST", "db"),
     "port": int(os.getenv("DB_PORT", 5432)),
     "database": os.getenv("DB_NAME", "SIH26"),
     "user": os.getenv("DB_USER", "postgres"),
@@ -138,8 +138,8 @@ async def ingest_event(event: DetectionEventSchema):
 @app.get("/api/v1/vehicles/{plate}/trajectory")
 def get_vehicle_trajectory(
         plate: str,
-        start_time: str = Query(..., example="2026-08-26T00:00:00Z"),
-        end_time: str = Query(..., example="2026-08-26T23:59:59Z")
+        start_time: Optional[str] = Query(None, example="2026-08-26T00:00:00Z"),
+        end_time: Optional[str] = Query(None, example="2026-08-26T23:59:59Z")
 ):
     try:
         trajectory = engine.reconstruct_trajectory(
@@ -508,3 +508,51 @@ def get_origin_destination_matrix(hours: int = 4, min_trips: int = 2):
             return {"time_window_hours": hours, "corridors": rows}
     finally:
         conn.close()
+
+# ============================================================================
+# 5. ANALYTICS API ROUTES
+# ============================================================================
+
+@app.get("/api/v1/analytics/summary", tags=["Analytics"])
+def get_analytics_summary():
+    """
+    Returns aggregated traffic metrics for the City EYE Analytics Dashboard.
+    """
+    try:
+        data = engine.get_24h_analytics_summary()
+        return data
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to generate analytics summary: {str(e)}"
+        )
+
+@app.get("/api/v1/tracking/predict/{plate_number}")
+async def predict_escape_route(plate_number: str):
+    """
+    Calculates the probable escape vector and downstream intercept 
+    chokepoints for a given target license plate.
+    """
+    try:
+        # Call the math engine
+        prediction = engine.get_predictive_intercept(plate_number)
+        
+        # Handle the edge case where the car was only seen once
+        if prediction.get("status") == "insufficient_data":
+            raise HTTPException(
+                status_code=404, 
+                detail="Insufficient tracking data. At least 2 sightings required to calculate velocity vector."
+            )
+            
+        # Return the JSON payload containing the cone polygon and intercept points
+        return prediction
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Catch any database or math errors
+        print(f"Prediction Error for plate {plate_number}: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Internal server error during predictive geodesic calculation."
+        )

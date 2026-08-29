@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+psycopg2-binary
+pydantic
+requests
+datetime
+typing
+networkx
+numpy

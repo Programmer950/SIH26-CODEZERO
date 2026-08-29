@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  db:
+    # Use PostGIS image for spatial database capabilities
+    image: postgis/postgis:15-3.3
+    container_name: city_eye_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: SIH26
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  backend:
+    build: ./backend
+    container_name: city_eye_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      # Use the Docker service name 'db' instead of localhost
+      - DATABASE_URL=postgresql://postgres:root@db:5432/SIH26
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    container_name: city_eye_frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    environment:
+      # Tell Vite where the backend is
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

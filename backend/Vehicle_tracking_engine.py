@@ -3,7 +3,7 @@ import json
 import numpy as np
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Tuple, Optional
 import networkx as nx
 
@@ -100,50 +100,60 @@ class TrafficTrackingEngine:
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cur:
-                # 1. Insert Event Record
-                cur.execute(
-                    """
-                    INSERT INTO camera_events
-                    (camera_id, plate_text, ocr_confidence, vehicle_class, vehicle_color, embedding, plate_crop_url,
-                     event_time)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING event_id;
-                    """,
-                    (
-                        event["camera_id"],
-                        event["plate_text"].upper().strip(),
-                        event.get("ocr_confidence", 0.90),
-                        event.get("vehicle_class"),
-                        event.get("vehicle_color"),
-                        json.dumps(event.get("embedding", [])),
-                        event.get("plate_crop_url"),
-                        event["timestamp"]
-                    )
-                )
-                event_id = cur.fetchone()["event_id"]
-
-                # 2. Check Blacklist Table for Immediate Alerting
-                cur.execute(
-                    "SELECT reason, alert_priority FROM blacklist WHERE plate_text = %s;",
-                    (event["plate_text"].upper().strip(),)
-                )
-                blacklist_hit = cur.fetchone()
-
-                alert_info = None
-                if blacklist_hit:
+                # 1. Insert Event Record with explicit commit
+                try:
                     cur.execute(
                         """
-                        INSERT INTO alerts_log (plate_text, camera_id, confidence, event_time)
-                        VALUES (%s, %s, %s, %s) RETURNING alert_id;
+                        INSERT INTO camera_events
+                        (camera_id, plate_text, ocr_confidence, vehicle_class, vehicle_color, embedding, plate_crop_url,
+                         event_time)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING event_id;
                         """,
-                        (event["plate_text"], event["camera_id"], event.get("ocr_confidence", 0.9), event["timestamp"])
+                        (
+                            event["camera_id"],
+                            event["plate_text"].upper().strip(),
+                            event.get("ocr_confidence", 0.90),
+                            event.get("vehicle_class"),
+                            event.get("vehicle_color"),
+                            json.dumps(event.get("embedding", [])),
+                            event.get("plate_crop_url"),
+                            event["timestamp"]
+                        )
                     )
-                    alert_info = {
-                        "is_blacklisted": True,
-                        "priority": blacklist_hit["alert_priority"],
-                        "reason": blacklist_hit["reason"]
-                    }
+                    event_id = cur.fetchone()["event_id"]
+                    conn.commit()  # Explicit commit immediately so record is persisted before alert broadcast
+                except Exception as db_err:
+                    conn.rollback()
+                    print(f"Error inserting camera_event record: {db_err}")
+                    raise db_err
 
-                conn.commit()
+                # 2. Check Blacklist Table for Immediate Alerting
+                alert_info = None
+                try:
+                    cur.execute(
+                        "SELECT reason, alert_priority FROM blacklist WHERE plate_text = %s;",
+                        (event["plate_text"].upper().strip(),)
+                    )
+                    blacklist_hit = cur.fetchone()
+
+                    if blacklist_hit:
+                        cur.execute(
+                            """
+                            INSERT INTO alerts_log (plate_text, camera_id, confidence, event_time)
+                            VALUES (%s, %s, %s, %s) RETURNING alert_id;
+                            """,
+                            (event["plate_text"].upper().strip(), event["camera_id"], event.get("ocr_confidence", 0.9), event["timestamp"])
+                        )
+                        alert_info = {
+                            "is_blacklisted": True,
+                            "priority": blacklist_hit["alert_priority"],
+                            "reason": blacklist_hit["reason"]
+                        }
+                        conn.commit()
+                except Exception as alert_err:
+                    conn.rollback()
+                    print(f"Warning: Failed to log alert in alerts_log: {alert_err}")
+
                 return {
                     "status": "SUCCESS",
                     "event_id": event_id,
@@ -239,18 +249,45 @@ class TrafficTrackingEngine:
     # =========================================================================
     # FUNCTION 3: TRAJECTORY RECONSTRUCTION (For Backend Team)
     # =========================================================================
-    def reconstruct_trajectory(self, target_plate: str, start_time: str, end_time: str) -> Dict:
+    def reconstruct_trajectory(self, target_plate: str, start_time: Optional[str] = None, end_time: Optional[str] = None) -> Dict:
         target_plate_clean = target_plate.upper().strip()
         conn = self.get_db_connection()
+        is_blacklisted = False
         try:
             with conn.cursor() as cur:
+                # 1. Threat Check: Verify if plate is on active blacklist
+                cur.execute("SELECT 1 FROM blacklist WHERE plate_text = %s AND is_active = TRUE;", (target_plate_clean,))
+                is_blacklisted = bool(cur.fetchone())
+
+                # 2. Threat-Based Time Boundary Calculation:
+                # Blacklisted -> 24 hours cutoff (datetime.now - 24 hours)
+                # Normal -> 3 hours cutoff (datetime.now - 3 hours)
+                cutoff_hours = 24 if is_blacklisted else 3
+                cutoff_time = datetime.now(timezone.utc) - timedelta(hours=cutoff_hours)
+
+                query_start = cutoff_time
+                if start_time:
+                    try:
+                        param_start = datetime.fromisoformat(str(start_time).replace("Z", "+00:00"))
+                        if param_start > cutoff_time:
+                            query_start = param_start
+                    except Exception:
+                        pass
+
+                query_end = datetime.now(timezone.utc)
+                if end_time:
+                    try:
+                        query_end = datetime.fromisoformat(str(end_time).replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+
                 query = """
                 SELECT 
                     e.event_id,
                     e.camera_id,
-                    c.name AS camera_name,
-                    c.latitude AS lat,
-                    c.longitude AS lon,
+                    COALESCE(c.name, e.camera_id) AS camera_name,
+                    COALESCE(c.latitude, 13.0827) AS lat,
+                    COALESCE(c.longitude, 80.2707) AS lon,
                     e.plate_text,
                     e.ocr_confidence,
                     e.vehicle_class,
@@ -259,17 +296,17 @@ class TrafficTrackingEngine:
                     e.plate_crop_url,
                     e.event_time::text AS timestamp
                 FROM camera_events e
-                JOIN cameras c ON e.camera_id = c.camera_id
-                WHERE e.event_time >= %s::timestamptz 
-                  AND e.event_time <= %s::timestamptz
-                  AND (
+                LEFT JOIN cameras c ON e.camera_id = c.camera_id
+                WHERE (
                       e.plate_text = %s 
                       OR similarity(e.plate_text, %s) > 0.35
                       OR levenshtein(e.plate_text, %s) <= 2
                   )
+                  AND e.event_time >= %s
+                  AND e.event_time <= %s
                 ORDER BY e.event_time ASC;
                 """
-                cur.execute(query, (start_time, end_time, target_plate_clean, target_plate_clean, target_plate_clean))
+                cur.execute(query, (target_plate_clean, target_plate_clean, target_plate_clean, query_start, query_end))
                 candidates = cur.fetchall()
         finally:
             conn.close()
@@ -279,49 +316,15 @@ class TrafficTrackingEngine:
                 "type": "FeatureCollection",
                 "properties": {
                     "target_plate": target_plate_clean,
+                    "is_blacklisted": is_blacklisted,
                     "total_sightings": 0,
                     "status": "NOT_FOUND"
                 },
                 "features": []
             }
 
-        G = nx.DiGraph()
-        for idx, item in enumerate(candidates):
-            G.add_node(idx, **item)
-
-        # 1. Connect chronological candidates if they pass fusion match
-        for i in range(len(candidates)):
-            # Look ahead to the next few candidates in time
-            for j in range(i + 1, min(i + 4, len(candidates))):
-                res = self.evaluate_vehicle_match(candidates[i], candidates[j])
-                if res["is_match"]:
-                    # Cost favors valid chronological transitions
-                    G.add_edge(i, j, weight=1.0 - res["final_score"], metrics=res)
-
-        # 2. Sequential Longest Valid Trajectory Chain (DAG traversal)
-        # Find the longest path of valid transitions through time
-        if G.number_of_edges() == 0:
-            best_path = [0]
-        else:
-            # Find the path that visits the maximum number of verified nodes in sequence
-            all_paths = []
-            sources = [n for n, d in G.in_degree() if d == 0] or [0]
-            targets = [n for n, d in G.out_degree() if d == 0] or [len(candidates) - 1]
-
-            for s in sources:
-                for t in targets:
-                    if s != t and nx.has_path(G, s, t):
-                        for p in nx.all_simple_paths(G, source=s, target=t):
-                            all_paths.append(p)
-
-            if all_paths:
-                # Pick path that covers the most sightings (longest chain), break ties with highest confidence
-                all_paths.sort(key=lambda p: len(p), reverse=True)
-                best_path = all_paths[0]
-            else:
-                best_path = list(range(len(candidates)))
-
-        ordered_nodes = [candidates[idx] for idx in best_path]
+        # Preserve ALL candidate sightings chronologically within the threat window
+        ordered_nodes = candidates
 
         # --------------------------------------------------------------------
         # BUILD GEOJSON OUTPUT
@@ -374,9 +377,171 @@ class TrafficTrackingEngine:
             "type": "FeatureCollection",
             "properties": {
                 "target_plate": target_plate_clean,
+                "is_blacklisted": is_blacklisted,
                 "total_sightings": len(ordered_nodes),
                 "start_time": ordered_nodes[0]["timestamp"],
                 "end_time": ordered_nodes[-1]["timestamp"]
             },
             "features": features
         }
+
+    def get_24h_analytics_summary(self) -> dict:
+        """Calculates city-wide traffic analytics for the City EYE dashboard."""
+        conn = self.get_db_connection() 
+        
+        try:
+            with conn.cursor() as cur:
+                # 1. Total Vehicles in 24H
+                cur.execute("""
+                    SELECT COUNT(*) as count
+                    FROM camera_events 
+                    WHERE event_time >= NOW() - INTERVAL '24 HOURS';
+                """)
+                total_row = cur.fetchone()
+                total_24h = total_row['count'] if total_row else 0
+
+                # 2. Top 5 Bottlenecks (Heatmap hotspots)
+                cur.execute("""
+                    SELECT camera_id, COUNT(*) as volume 
+                    FROM camera_events 
+                    WHERE event_time >= NOW() - INTERVAL '24 HOURS' 
+                    GROUP BY camera_id 
+                    ORDER BY volume DESC 
+                    LIMIT 5;
+                """)
+                top_cameras = cur.fetchall()
+
+                # 3. Vehicle Class Distribution
+                cur.execute("""
+                    SELECT vehicle_class, COUNT(*) as count 
+                    FROM camera_events 
+                    WHERE event_time >= NOW() - INTERVAL '24 HOURS' 
+                    GROUP BY vehicle_class;
+                """)
+                vehicle_types = cur.fetchall()
+
+                # 4. Telemetry Trend (Last 12 hours)
+                cur.execute("""
+                    SELECT to_char(date_trunc('hour', event_time), 'HH24:00') as time, COUNT(*) as count 
+                    FROM camera_events 
+                    WHERE event_time >= NOW() - INTERVAL '12 HOURS' 
+                    GROUP BY time 
+                    ORDER BY time;
+                """)
+                trend_data = cur.fetchall()
+
+            return {
+                "total_vehicles_24h": total_24h,
+                "top_bottlenecks": [
+                    {"camera": row["camera_id"], "volume": row["volume"]} 
+                    for row in top_cameras
+                ],
+                "fleet_distribution": [
+                    {"type": row["vehicle_class"], "count": row["count"]} 
+                    for row in vehicle_types if row["vehicle_class"]
+                ],
+                "telemetry_trend": [
+                    {"time": row["time"], "count": row["count"]} 
+                    for row in trend_data
+                ]
+            }
+        except Exception as e:
+            print(f"Analytics Query Error: {e}")
+            return {
+                "total_vehicles_24h": 0, 
+                "top_bottlenecks": [], 
+                "fleet_distribution": [],
+                "telemetry_trend": []
+            }
+        finally:
+            if conn:
+                conn.close()
+
+    def _calculate_bearing(self, lat1, lon1, lat2, lon2):
+        dLon = math.radians(lon2 - lon1)
+        y = math.sin(dLon) * math.cos(math.radians(lat2))
+        x = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) - \
+            math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dLon)
+        return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+    def _haversine_distance(self, lat1, lon1, lat2, lon2):
+        R = 6371.0
+        lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+        a = math.sin((lat2 - lat1)/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1)/2)**2
+        return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+    def _calculate_destination(self, lat, lon, bearing, distance_km):
+        """Calculates a destination coordinate given a start point, bearing, and distance."""
+        R = 6371.0
+        lat_rad, lon_rad, bearing_rad = map(math.radians, [lat, lon, bearing])
+        
+        lat2_rad = math.asin(math.sin(lat_rad) * math.cos(distance_km / R) +
+                             math.cos(lat_rad) * math.sin(distance_km / R) * math.cos(bearing_rad))
+        lon2_rad = lon_rad + math.atan2(math.sin(bearing_rad) * math.sin(distance_km / R) * math.cos(lat_rad),
+                                        math.cos(distance_km / R) - math.sin(lat_rad) * math.sin(lat2_rad))
+        return [math.degrees(lat2_rad), math.degrees(lon2_rad)]
+
+    def get_predictive_intercept(self, plate_number: str) -> dict:
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT c.latitude, c.longitude, e.event_time, c.camera_id
+                    FROM camera_events e
+                    JOIN cameras c ON e.camera_id = c.camera_id
+                    WHERE e.plate_text = %s
+                    ORDER BY e.event_time DESC LIMIT 2;
+                """, (plate_number.upper().strip(),))
+                sightings = cur.fetchall()
+
+                if len(sightings) < 2:
+                    return {"status": "insufficient_data"}
+
+                current, previous = sightings[0], sightings[1]
+                
+                # Math: Heading & Speed
+                distance_km = self._haversine_distance(previous['latitude'], previous['longitude'], current['latitude'], current['longitude'])
+                time_diff_hours = (current['event_time'] - previous['event_time']).total_seconds() / 3600.0
+                speed_kmh = (distance_km / time_diff_hours) if time_diff_hours > 0 else 45.0 
+                heading = self._calculate_bearing(previous['latitude'], previous['longitude'], current['latitude'], current['longitude'])
+
+                # Math: Create the Probability Cone (15km deep, 50-degree spread)
+                cone_depth = 15.0
+                spread = 25.0 
+                origin = [current['latitude'], current['longitude']]
+                p_left = self._calculate_destination(origin[0], origin[1], (heading - spread) % 360, cone_depth)
+                p_center = self._calculate_destination(origin[0], origin[1], heading, cone_depth)
+                p_right = self._calculate_destination(origin[0], origin[1], (heading + spread) % 360, cone_depth)
+                
+                cone_polygon = [origin, p_left, p_center, p_right]
+
+                # Find Intercept Cameras inside the cone
+                cur.execute("SELECT camera_id, camera_name, latitude, longitude FROM cameras WHERE camera_id != %s;", (current['camera_id'],))
+                predictions = []
+                for cam in cur.fetchall():
+                    cam_distance = self._haversine_distance(origin[0], origin[1], cam['latitude'], cam['longitude'])
+                    cam_bearing = self._calculate_bearing(origin[0], origin[1], cam['latitude'], cam['longitude'])
+                    
+                    angle_diff = abs(heading - cam_bearing)
+                    if angle_diff > 180: angle_diff = 360 - angle_diff
+                        
+                    if angle_diff <= spread and cam_distance < cone_depth:
+                        predictions.append({
+                            "camera_name": cam['camera_name'],
+                            "latitude": cam['latitude'],
+                            "longitude": cam['longitude'],
+                            "distance_km": round(cam_distance, 2),
+                            "eta_minutes": round((cam_distance / speed_kmh) * 60, 1)
+                        })
+
+                predictions.sort(key=lambda x: x['eta_minutes'])
+                
+                return {
+                    "status": "success",
+                    "current_heading": round(heading, 1),
+                    "estimated_speed_kmh": round(speed_kmh, 1),
+                    "cone_polygon": cone_polygon,
+                    "intercept_points": predictions[:3]
+                }
+        finally:
+            if conn: conn.close()
