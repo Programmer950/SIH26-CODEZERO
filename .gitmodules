@@ -1,0 +1,3 @@
+[submodule "src/second-repo"]
+	path = src/second-repo
+	url = https://github.com/UNKN0WN4O4/License-detect-VISIOn.git
