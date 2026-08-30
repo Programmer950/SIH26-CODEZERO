@@ -28,13 +28,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 VEHICLE_MODEL_PATH = os.path.join(SCRIPT_DIR, "vehiclemodelv8m.pt")
 PLATE_MODEL_PATH = os.path.join(SCRIPT_DIR, "plate_model.pt")
-VIDEO_PATH = os.path.join(SCRIPT_DIR, "/Users/bahrudeen/Downloads/toTest.mp4")  # <-- set your actual video path
+VIDEO_PATH = os.path.join(SCRIPT_DIR, "/Users/bahrudeen/Documents/5th sem /SIH/test video.mp4")  # <-- set your actual video path
 CAMERA_ID = "CAM01"
 
-SAMPLE_EVERY_N = 2                  # how often (in frames) to attempt plate detection + OCR
+SAMPLE_EVERY_N = 5                  # how often (in frames) to attempt plate detection + OCR
 PLATE_CROP_PADDING = 10             # pixels of padding around detected plate box
 BLUR_THRESHOLD = 100.0              # below this = too blurry to bother OCR-ing (tune based on your footage)
-MAX_READINGS_PER_TRACK = 8          # cap how many OCR calls we spend per vehicle — avoids wasting API calls
+MAX_READINGS_PER_TRACK = 15          # cap how many OCR calls we spend per vehicle — avoids wasting API calls
 TRACK_TIMEOUT_FRAMES = 30           # if a track hasn't been seen for this many frames, consider it "gone" and finalize it
 
 VEHICLE_CLASSES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
@@ -129,6 +129,41 @@ def compute_blur_score(image: np.ndarray) -> float:
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     return cv2.Laplacian(gray, cv2.CV_64F).var()
+
+# ============================================================
+# VISUALIZATION HELPERS — add near your other helper functions
+# ============================================================
+
+def draw_visualization(frame, vehicle_box, vehicle_class, plate_box=None,
+                        vehicle_crop_offset=(0, 0), display_text=None):
+    """
+    Draws vehicle bbox (green), plate bbox (yellow, if given), and
+    the current best-known plate text above the vehicle box.
+
+    vehicle_crop_offset: (x1, y1) of the vehicle crop within the full frame,
+    needed to translate plate_box coordinates (which are relative to the
+    vehicle crop) back into full-frame coordinates for drawing.
+    """
+    vx1, vy1, vx2, vy2 = vehicle_box
+
+    # Vehicle bounding box
+    cv2.rectangle(frame, (vx1, vy1), (vx2, vy2), (0, 255, 0), 2)
+
+    label = vehicle_class
+    if display_text:
+        label = f"{vehicle_class} | {display_text}"
+
+    (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+    cv2.rectangle(frame, (vx1, vy1 - text_h - 12), (vx1 + text_w + 10, vy1), (0, 0, 0), -1)
+    cv2.putText(frame, label, (vx1 + 5, vy1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Plate bounding box, translated from vehicle-crop-relative to full-frame coordinates
+    if plate_box is not None:
+        px1, py1, px2, py2 = plate_box
+        ox, oy = vehicle_crop_offset
+        cv2.rectangle(frame, (ox + px1, oy + py1), (ox + px2, oy + py2), (0, 255, 255), 2)
+
+    return frame
 
 
 # ============================================================
