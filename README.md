@@ -1,110 +1,159 @@
-# ANPR Video Pipeline
+# SIH26-CODEZERO ANPR Pipeline
 
-This project performs automatic number plate recognition (ANPR) on video footage by combining:
+This project detects vehicles in a video, extracts number plates, reads them using NVIDIA Vision AI, and sends the final recognized plate to a backend API.
 
-- vehicle detection and tracking
-- license plate detection
-- OCR via the NVIDIA Vision API
-- majority-vote finalization per vehicle track
-- sending real-time detection events to a FastAPI dashboard backend
+The goal is simple: a user can download this project, open a terminal, and run it without manually writing Python code.
 
-## Project Structure
+## What this project does
+
+- Detects vehicles from video frames
+- Tracks each vehicle across frames
+- Detects plates on each vehicle
+- Uses NVIDIA Vision API to read the plate text
+- Finalizes the most likely plate using a majority-vote approach
+- Sends the result to the configured backend
+
+## Files in this project
 
 - `anpr_video.py` — main video processing pipeline
-- `event_client.py` — utility for posting OCR/vehicle events to the backend API
-- `model_check.py` — lightweight model sanity check / verification script
+- `event_client.py` — sends detection events to the backend
+- `model_check.py` — checks whether the model files are valid
 - `vehiclemodelv8m.pt` — vehicle detection model
-- `plate_model.pt` — plate detection model
-- `.env` — local environment variables (ignored by Git)
+- `plate_model.pt` — license plate detection model
+- `requirements.txt` — Python dependencies
+- `.env` — local secrets such as the NVIDIA API key
+- `test.mp4` — sample video used by the pipeline
 
-## Setup
+## One-click setup for beginners
 
-1. Create a virtual environment (optional but recommended):
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
+From the project folder, run these commands in your terminal:
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+cd /path/to/SIH26-CODEZERO
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python anpr_video.py
+```
 
-3. Add your NVIDIA API key to the local environment file:
-   ```bash
-   cp .env .env.local
-   ```
-   Then edit `.env` and set:
-   ```env
-   NVIDIA_API_KEY=your_nvidia_api_key_here
-   BACKEND_BASE_URL=http://localhost:8000
-   ```
+If the project is already set up and you only want to run it again:
 
-4. Update the video path in `anpr_video.py` to match your local file:
-   ```python
-   VIDEO_PATH = "path/to/your/video.mp4"
-   ```
+```bash
+cd /path/to/SIH26-CODEZERO
+source .venv/bin/activate
+python anpr_video.py
+```
 
-5. Run the pipeline:
-   ```bash
-   python anpr_video.py
-   ```
+## Required environment variable
 
-## Sending events to the dashboard backend
+Before running the project, make sure your NVIDIA API key is present in `.env`:
 
-The project includes a helper utility in `event_client.py` for sending vehicle/OCR data to your FastAPI backend.
+```env
+NVIDIA_API_KEY=your_api_key_here
+```
 
-### Example
+If `.env` does not exist, create it with:
+
+```bash
+nano .env
+```
+
+Then paste:
+
+```env
+NVIDIA_API_KEY=your_api_key_here
+```
+
+## Run it with a single shell script
+
+This project includes a helper script so you can run everything in one command:
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+This script will:
+
+- create a virtual environment if missing
+- install requirements
+- load environment variables
+- start the ANPR pipeline
+
+## Change the input video
+
+Open `anpr_video.py` and set the video file path:
 
 ```python
-from event_client import send_vehicle_event
-
-send_vehicle_event(
-    camera_id="CAM01",
-    plate_text="KA05AB1234",
-    ocr_confidence=0.97,
-    vehicle_class="SUV",
-    vehicle_color="White",
-    embedding=[0.142, -0.052, 0.811],
-    plate_crop_url="https://example.com/plate_crop.jpg",
-    base_url="http://localhost:8000",
-)
+VIDEO_PATH = os.path.join(SCRIPT_DIR, "test.mp4")
 ```
 
-This sends the payload to:
+You can replace `test.mp4` with any video file in the same folder, for example:
 
-```http
-POST http://localhost:8000/api/v1/events
+```python
+VIDEO_PATH = os.path.join(SCRIPT_DIR, "my_vehicle_video.mp4")
 ```
 
-with JSON headers and a timestamp automatically generated in UTC if not provided.
+## Backend URL configuration
 
-## Payload fields
+The event sender uses a backend URL from the environment variable `BACKEND_BASE_URL` or falls back to the default value in `event_client.py`.
 
-The function accepts:
+Example:
 
-- `camera_id` (required)
-- `plate_text` (required)
-- `ocr_confidence` (required)
-- `timestamp` (optional; auto-generated if missing)
-- `vehicle_class` (optional)
-- `vehicle_color` (optional)
-- `embedding` (optional list of floats)
-- `plate_crop_url` (optional)
+```env
+BACKEND_BASE_URL=http://localhost:8000
+```
+
+## Troubleshooting
+
+### 1. `NVIDIA_API_KEY not set`
+This means your `.env` file is not loaded or is missing the key.
+
+Fix:
+
+```bash
+nano .env
+```
+
+and add:
+
+```env
+NVIDIA_API_KEY=your_api_key_here
+```
+
+### 2. Python package errors
+Run:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Video cannot be opened
+Check that the file path in `anpr_video.py` is correct and that the video exists in the project folder.
+
+### 4. No plate detected
+This may happen if the video is too blurry, too dark, or the plate is not visible enough.
+
+## Example workflow for a new user
+
+```bash
+git clone <repo-url>
+cd SIH26-CODEZERO
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+nano .env
+# add NVIDIA_API_KEY=your_api_key_here
+python anpr_video.py
+```
 
 ## Notes
 
-- The `.env` file is included in `.gitignore` and should never be committed.
-- Do not hardcode secret keys in source files.
-- The OCR model expects a valid NVIDIA API key with access to the configured vision endpoint.
-- The backend should be running before sending events; the client will time out after 3 seconds if the service is unavailable.
+- Do not hardcode API keys directly into source files.
+- Keep `.env` local and private.
+- The project expects NVIDIA access for the vision OCR model.
+- The backend should be running if you want event submissions to be accepted.
 
-## Requirements
+## License
 
-The project uses:
-
-- OpenCV
-- NumPy
-- python-dotenv
-- Ultralytics YOLO
-- Requests
+This project is for academic and local development use.
