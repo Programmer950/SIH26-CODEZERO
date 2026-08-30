@@ -136,6 +136,7 @@ export default function App() {
           <LeftDrawer
             key={tab}
             tab={tab}
+            setTab={setTab}
             route={route}
             tracePlate={tracePlate}
             onTracePlateChange={setTracePlate}

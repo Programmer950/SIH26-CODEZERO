@@ -7,3 +7,4 @@ datetime
 typing
 networkx
 numpy
+torch

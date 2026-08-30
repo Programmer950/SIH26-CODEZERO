@@ -229,3 +229,29 @@ INSERT INTO cameras (camera_id, name, latitude, longitude, direction_heading, sp
 ('CAM_SL_10', 'Kundrathur Murugan Temple', 12.9915, 80.0985, 210, 40)
 
 ON CONFLICT (camera_id) DO NOTHING;
+
+-- ============================================================================
+-- 8. PROBABILISTIC MARKOV TRANSITION MATRIX (First-Order)
+-- ============================================================================
+DROP MATERIALIZED VIEW IF EXISTS markov_matrix_v2 CASCADE;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS markov_matrix AS
+WITH sequential_hits AS (
+    SELECT 
+        camera_id AS current_camera,
+        LEAD(camera_id) OVER (PARTITION BY plate_text ORDER BY event_time) AS next_camera
+    FROM camera_events
+),
+transition_counts AS (
+    SELECT current_camera, next_camera, COUNT(*) as weight
+    FROM sequential_hits
+    WHERE next_camera IS NOT NULL
+    GROUP BY current_camera, next_camera
+)
+SELECT 
+    current_camera, 
+    next_camera, 
+    weight::FLOAT / SUM(weight) OVER (PARTITION BY current_camera) AS probability
+FROM transition_counts;
+
+CREATE INDEX IF NOT EXISTS idx_markov_current ON markov_matrix(current_camera);

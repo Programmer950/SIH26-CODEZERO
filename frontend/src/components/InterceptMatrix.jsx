@@ -1,12 +1,18 @@
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { AlertTriangle, MapPin, Navigation, Zap } from 'lucide-react'
+import { AlertTriangle, Clock, Compass, Cpu, MapPin, Navigation, Percent, ShieldCheck, Zap } from 'lucide-react'
+import client from '../api/client'
 
-const DEFAULT_INTERCEPT_POINTS = [
-  { camera_id: 'CAM_13_KATHIPARA', camera_name: 'Kathipara Junction Flyover', distance_km: 2.8, eta_minutes: 3.5 },
-  { camera_id: 'CAM_04_GUINDY', camera_name: 'Guindy Racecourse Rotary', distance_km: 4.2, eta_minutes: 5.0 },
-  { camera_id: 'CAM_07_ANNA_SALAI', camera_name: 'Anna Salai Mount Road Arterial', distance_km: 6.1, eta_minutes: 7.5 },
-  { camera_id: 'CAM_09_VELACHERY', camera_name: 'Velachery Main Corridor', distance_km: 8.4, eta_minutes: 10.2 }
-]
+const getProbabilityMeta = (prob) => {
+  const p = Number(prob ?? 0)
+  if (p >= 0.5) {
+    return { color: '#ff2a2a', label: 'HIGH THREAT', badgeClass: 'prob-badge-high' }
+  }
+  if (p >= 0.2) {
+    return { color: '#ff9f0a', label: 'ELEVATED', badgeClass: 'prob-badge-med' }
+  }
+  return { color: '#00f0ff', label: 'PROBABLE', badgeClass: 'prob-badge-low' }
+}
 
 export default function InterceptMatrix({ route, blacklist = [] }) {
   if (!route) return null
@@ -27,15 +33,42 @@ export default function InterceptMatrix({ route, blacklist = [] }) {
     : null
 
   const latestTimestamp = latestSighting?.properties?.timestamp || route?.properties?.timestamp || route?.timestamp
+  const latestCameraId = latestSighting?.properties?.camera_id || route?.properties?.latest_camera_id || route?.current_camera || ''
+  const trajectoryLength = pointFeatures.length
+  const blindSpotsRecovered = route?.properties?.blind_spots_recovered || route?.blind_spots_recovered || 0
+
   const hoursElapsed = latestTimestamp
     ? (Date.now() - new Date(latestTimestamp).getTime()) / (1000 * 60 * 60)
     : 0
 
   const isFresh = hoursElapsed <= 2
 
-  const speed = route?.speed || route?.properties?.estimated_speed || 68
-  const heading = route?.heading || route?.properties?.heading || 245
-  const points = route?.intercept_points || route?.properties?.intercept_points || DEFAULT_INTERCEPT_POINTS
+  // Reactive state hook: Re-trigger prediction lookup whenever latest_camera_id or trajectory length changes
+  const [predictionData, setPredictionData] = useState(null)
+
+  useEffect(() => {
+    if (!targetPlate) {
+      setPredictionData(null)
+      return
+    }
+
+    let isMounted = true
+    client.predict(targetPlate)
+      .then(res => {
+        if (isMounted && res) {
+          setPredictionData(res)
+        }
+      })
+      .catch(err => {
+        console.warn('Prediction query error:', err)
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [targetPlate, latestCameraId, trajectoryLength])
+
+  const nodes = predictionData?.forecast?.predictions || predictionData?.probabilistic_nodes || route?.forecast?.predictions || route?.probabilistic_nodes || route?.properties?.probabilistic_nodes || []
 
   return (
     <motion.div
@@ -46,13 +79,25 @@ export default function InterceptMatrix({ route, blacklist = [] }) {
       transition={{ duration: 0.3 }}
     >
       <div className="matrix-header">
-        <span className="matrix-title"><Zap size={15} color="#ffaa00" /> [ ⚡ TACTICAL INTERCEPT MATRIX ]</span>
+        <span className="matrix-title flex items-center gap-1.5">
+          <Cpu size={15} color="#ec4899" />
+          <span className="text-transparent bg-clip-text bg-gradient-to-r from-pink-400 to-purple-400 font-bold">
+            [ AI TRAJECTORY FORECASTER ]
+          </span>
+        </span>
         <span className="matrix-target-badge">{targetPlate}</span>
       </div>
 
-      <p className="text-[13px] font-medium text-slate-200 leading-relaxed mt-2 mb-3 border-b border-amber-500/30 pb-2.5 font-sans">
-        Calculates real-time escape probability vectors to predict downstream camera chokepoint interception.
+      <p className="text-[12px] font-medium text-slate-300 leading-relaxed mt-2 mb-2 border-b border-purple-500/30 pb-2 font-sans">
+        Hybrid <b>GNN + RNN Deep Sequence Model</b> forecasting downstream intersections, travel ETAs, and road network vectors.
       </p>
+
+      {blindSpotsRecovered > 0 && (
+        <div className="flex items-center gap-1.5 text-[11px] font-mono text-cyan-300 bg-cyan-950/40 border border-cyan-500/40 px-2 py-1 rounded mb-2">
+          <ShieldCheck size={13} className="text-cyan-400" />
+          <span><b>{blindSpotsRecovered}</b> Blind-Spot Route(s) Recovered via GIS Constraints</span>
+        </div>
+      )}
 
       {!isFresh ? (
         <div className="stale-warning-block border border-red-500/60 bg-red-950/40 p-3 rounded-lg text-red-200 mt-2 font-mono">
@@ -64,35 +109,75 @@ export default function InterceptMatrix({ route, blacklist = [] }) {
             Target last seen <b className="text-amber-400 font-mono">{hoursElapsed.toFixed(1)}</b> hours ago. Confidence interval too low for predictive intercept. Awaiting fresh telemetry.
           </p>
         </div>
+      ) : nodes.length === 0 ? (
+        <div className="empty-destinations-block p-4 rounded-lg bg-slate-900/60 border border-slate-700/60 text-slate-300 text-xs font-mono my-2 text-center">
+          <div className="text-cyan-400 font-semibold mb-1 flex items-center justify-center gap-1.5">
+            <Navigation size={13} color="#00f0ff" />
+            <span>CURRENT NODE: {latestCameraId || 'LAST KNOWN'}</span>
+          </div>
+          <p className="text-slate-400 text-[11px] font-sans m-0">
+            No downstream transitions recorded for this specific corridor in historical traffic data.
+          </p>
+        </div>
       ) : (
         <>
-          <div className="matrix-telemetry text-xs font-mono text-slate-400 my-2">
-            <span>EST VELOCITY: <b className="text-[#ffaa00] font-mono">{speed} KM/H</b></span>
-            <span className="mx-1 text-slate-600">|</span>
-            <span>VECTOR: <b className="text-[#ffaa00] font-mono">{heading}°</b></span>
+          <div className="matrix-telemetry text-xs font-mono text-slate-400 my-2 flex items-center justify-between">
+            <span>MODEL: <b className="text-purple-400 font-mono">GNN + GRU</b></span>
+            <span>DESTINATIONS: <b className="text-[#00f0ff] font-mono">{nodes.length}</b></span>
           </div>
 
           <div className="chokepoint-section">
-            <h4 className="text-xs font-semibold text-cyan-400 mb-2 flex items-center gap-1">
-              <Navigation size={13} color="#00f0ff" /> AVAILABLE CHOKEPOINTS ({points.length})
+            <h4 className="text-xs font-semibold text-purple-300 mb-2 flex items-center gap-1">
+              <Compass size={13} color="#ec4899" /> PREDICTED NEXT INTERSECTIONS
             </h4>
             <div className="chokepoint-list max-h-[350px] overflow-y-auto pr-2 custom-scrollbar flex flex-col gap-2">
-              {points.map((point, index) => (
-                <div key={point.camera_id || index} className="chokepoint-card">
-                  <div className="chokepoint-main">
-                    <MapPin size={14} color="#ffaa00" />
-                    <div className="chokepoint-text">
-                      <strong className="camera-name">{point.camera_name || point.name}</strong>
-                      <span className="sub-detail">
-                        DISTANCE: <b className="font-mono text-cyan-300">{point.distance_km ?? (2.5 + index * 1.5).toFixed(1)} KM</b>
-                      </span>
+              {nodes.map((node, index) => {
+                const prob = Number(node.probability ?? 0)
+                const percent = node.probability_percent || (prob * 100).toFixed(1)
+                const wholePercent = Math.round(prob * 100)
+                const meta = getProbabilityMeta(prob)
+                const name = node.camera_name || node.name || node.camera_id || `Node ${index + 1}`
+                const eta = node.eta_minutes || (node.distance_km ? (node.distance_km / 0.7).toFixed(1) : 3.0)
+                const dist = node.distance_km ? Number(node.distance_km).toFixed(1) : null
+
+                return (
+                  <div key={node.camera_id || index} className="chokepoint-card border border-purple-500/20 bg-slate-900/80 hover:border-purple-500/50 transition">
+                    <div className="chokepoint-main">
+                      <MapPin size={16} color={meta.color} />
+                      <div className="chokepoint-text flex-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <strong className="camera-name text-white font-medium text-xs">{name}</strong>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 mt-0.5">
+                          <span>NODE: <b className="text-cyan-300">{node.camera_id || node.next_camera || `DEST_${index + 1}`}</b></span>
+                          {dist && <span>· <b>{dist} km</b></span>}
+                          {eta && (
+                            <span className="text-amber-300 flex items-center gap-0.5">
+                              <Clock size={10} /> <b>{eta}m ETA</b>
+                            </span>
+                          )}
+                        </div>
+                        <div className="prob-bar-container mt-1.5">
+                          <div
+                            className="prob-bar-fill"
+                            style={{
+                              width: `${Math.min(100, Math.max(5, wholePercent))}%`,
+                              background: `linear-gradient(90deg, ${meta.color}, #ec4899)`
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className={`prob-badge ${meta.badgeClass} ml-2 flex flex-col items-center justify-center`}>
+                      <div className="flex items-center gap-0.5">
+                        <Percent size={10} />
+                        <span className="font-bold">{percent}%</span>
+                      </div>
+                      <span className="text-[8px] uppercase tracking-wider text-slate-300 mt-0.5">{meta.label}</span>
                     </div>
                   </div>
-                  <div className="eta-badge">
-                    <span>{point.eta_minutes ?? point.eta ?? (3 + index * 2)} MINS</span>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </>
@@ -100,3 +185,4 @@ export default function InterceptMatrix({ route, blacklist = [] }) {
     </motion.div>
   )
 }
+

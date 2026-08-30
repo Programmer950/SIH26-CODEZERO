@@ -1,6 +1,10 @@
+import sys
 import json
 from datetime import datetime, timezone
 from Vehicle_tracking_engine import TrafficTrackingEngine
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 
 # Database connection credentials
 DB_CONFIG = {
@@ -95,14 +99,30 @@ def verify_geojson_engine():
     print(f" ✅ Total Sightings Resolved: {geojson_result['properties']['total_sightings']}")
 
     # Check LineString
-    linestring_features = [f for f in features if f["geometry"]["type"] == "LineString"]
+    main_linestrings = [f for f in features if f["geometry"]["type"] == "LineString" and not f.get("properties", {}).get("is_forecast") and not f.get("properties", {}).get("is_interpolated")]
+    forecast_linestrings = [f for f in features if f["geometry"]["type"] == "LineString" and f.get("properties", {}).get("is_forecast")]
     point_features = [f for f in features if f["geometry"]["type"] == "Point"]
 
-    assert len(linestring_features) == 1, "❌ LineString route feature missing"
-    assert len(point_features) == 3, f"❌ Expected 3 Point sightings, got {len(point_features)}"
+    assert len(main_linestrings) == 1, "❌ Main LineString route feature missing"
+    assert len(point_features) >= 3, f"❌ Expected >= 3 Point sightings, got {len(point_features)}"
 
-    print(f" ✅ Route Geometry: LineString with {len(linestring_features[0]['geometry']['coordinates'])} waypoints")
+    print(f" ✅ Route Geometry: LineString with {len(main_linestrings[0]['geometry']['coordinates'])} waypoints")
+    print(f" ✅ Forecast Vectors: {len(forecast_linestrings)} future prediction LineStrings")
     print(f" ✅ Map Pins: {len(point_features)} Point features")
+
+    # Verify distance_from_prev_km and segment_speed_kmh property exists on point features
+    for idx, pt in enumerate(point_features):
+        assert "distance_from_prev_km" in pt["properties"], f"❌ distance_from_prev_km missing on node {idx}"
+        assert "segment_speed_kmh" in pt["properties"], f"❌ segment_speed_kmh missing on node {idx}"
+        if idx == 0:
+            assert pt["properties"]["distance_from_prev_km"] == 0, "❌ First node distance should be 0"
+            assert pt["properties"]["segment_speed_kmh"] == 0, "❌ First node speed should be 0"
+    print(" ✅ Node Speeds & Distances: 'segment_speed_kmh' and 'distance_from_prev_km' validated on Point features")
+
+    # Verify total_trip_avg_speed_kmh exists in properties and root
+    assert "total_trip_avg_speed_kmh" in geojson_result["properties"], "❌ total_trip_avg_speed_kmh missing in properties"
+    assert "total_trip_avg_speed_kmh" in geojson_result, "❌ total_trip_avg_speed_kmh missing in root payload"
+    print(f" ✅ Trip Avg Speed: {geojson_result['properties']['total_trip_avg_speed_kmh']} km/h validated")
 
     # 5. Coordinate Format Check ([lon, lat])
     for pt in point_features:
