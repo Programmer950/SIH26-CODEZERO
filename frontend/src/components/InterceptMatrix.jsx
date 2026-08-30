@@ -66,11 +66,22 @@ export default function InterceptMatrix({ route, blacklist = [] }) {
         </div>
       ) : (
         <>
-          <div className="matrix-telemetry text-xs font-mono text-slate-400 my-2">
-            <span>EST VELOCITY: <b className="text-[#ffaa00] font-mono">{speed} KM/H</b></span>
-            <span className="mx-1 text-slate-600">|</span>
+          <div className="matrix-telemetry text-xs font-mono text-slate-400 my-2 flex items-center justify-between">
+            <span>VELOCITY: <b className="text-[#ffaa00] font-mono">{speed} KM/H</b></span>
             <span>VECTOR: <b className="text-[#ffaa00] font-mono">{heading}°</b></span>
+            <span className="text-[10px] text-purple-300 bg-purple-950/60 px-1.5 py-0.5 rounded border border-purple-500/30">GNN+RNN</span>
           </div>
+
+          {route?.properties?.destination_forecast && (
+            <div className="mb-3 p-2 rounded bg-purple-950/30 border border-purple-500/30 text-xs font-mono">
+              <span className="text-[10px] text-purple-300 block uppercase font-semibold">Projected Destination</span>
+              <strong className="text-cyan-300 text-xs block">{route.properties.destination_forecast.hub_name}</strong>
+              <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
+                <span>ETA: <b className="text-amber-300">{route.properties.destination_forecast.eta_minutes}m</b></span>
+                <span>Prob: <b className="text-purple-300">{Math.round(route.properties.destination_forecast.confidence * 100)}%</b></span>
+              </div>
+            </div>
+          )}
 
           <div className="chokepoint-section">
             <h4 className="text-xs font-semibold text-cyan-400 mb-2 flex items-center gap-1">

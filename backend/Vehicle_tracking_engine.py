@@ -1,11 +1,18 @@
 import math
 import json
 import numpy as np
-import psycopg2
-from psycopg2.extras import RealDictCursor
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+    RealDictCursor = None
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Tuple, Optional
 import networkx as nx
+
+from road_network import GISRoadNetworkGraph, CAMERA_COORDINATES
+from trajectory_forecaster import TrajectoryForecastingEngine
 
 # -------------------------------------------------------------------------
 # 1. OCR CONFUSION & SIMILARITY UTILITIES
@@ -74,6 +81,10 @@ class TrafficTrackingEngine:
         self.speed_sigma = speed_sigma
         self.match_threshold = match_threshold
         self.review_threshold = review_threshold
+        
+        # Spatial GIS Road Network & GNN/RNN Trajectory Forecaster
+        self.road_network = GISRoadNetworkGraph()
+        self.forecaster = TrajectoryForecastingEngine(road_graph=self.road_network)
 
     def get_db_connection(self):
         return psycopg2.connect(**self.db_config, cursor_factory=RealDictCursor)
@@ -327,18 +338,18 @@ class TrafficTrackingEngine:
         ordered_nodes = candidates
 
         # --------------------------------------------------------------------
-        # BUILD GEOJSON OUTPUT
-        # Note: GeoJSON coordinates standard is strictly [Longitude, Latitude]
+        # 1. BUILD GEOJSON OUTPUT WITH GIS ROAD NETWORK BLIND-SPOT INTERPOLATION
         # --------------------------------------------------------------------
         features = []
-        line_coordinates = []
+        full_line_coordinates = []
+        blind_spot_segments = []
+        total_blind_distance_km = 0.0
 
+        # Point Feature for each Camera Sighting Pin
         for seq, node in enumerate(ordered_nodes, start=1):
             lon = float(node["lon"])
             lat = float(node["lat"])
-            line_coordinates.append([lon, lat])
 
-            # Point Feature for each Camera Sighting Pin
             features.append({
                 "type": "Feature",
                 "geometry": {
@@ -359,17 +370,118 @@ class TrafficTrackingEngine:
                 }
             })
 
-        # LineString Feature connecting the trajectory path (if >= 2 points)
-        if len(line_coordinates) >= 2:
+        # 2. Road Network Blind-Spot Interpolation along Consecutive Sightings
+        for i in range(len(ordered_nodes) - 1):
+            node_a = ordered_nodes[i]
+            node_b = ordered_nodes[i + 1]
+            cam_a = node_a["camera_id"]
+            cam_b = node_b["camera_id"]
+
+            # Interpolate route using GIS Road Network topology & traffic constraints
+            interp = self.road_network.interpolate_blind_spot(cam_a, cam_b)
+            seg_coords = interp.get("coordinates")
+            if not seg_coords:
+                seg_coords = [
+                    [float(node_a["lon"]), float(node_a["lat"])],
+                    [float(node_b["lon"]), float(node_b["lat"])]
+                ]
+
+            if not full_line_coordinates:
+                full_line_coordinates.extend(seg_coords)
+            else:
+                full_line_coordinates.extend(seg_coords[1:])
+
+            # If gap traverses unmonitored blind zone or multiple hops
+            if interp.get("is_blind_spot"):
+                gap_km = interp.get("gap_distance_km", 0.0)
+                total_blind_distance_km += gap_km
+
+                blind_spot_segments.append({
+                    "source_camera": cam_a,
+                    "source_name": node_a.get("camera_name", cam_a),
+                    "target_camera": cam_b,
+                    "target_name": node_b.get("camera_name", cam_b),
+                    "gap_distance_km": gap_km,
+                    "confidence": interp.get("confidence", 0.85),
+                    "via_corridors": interp.get("via_corridors", []),
+                    "path_nodes": interp.get("path_nodes", []),
+                    "coordinates": seg_coords
+                })
+
+                # Dedicated LineString for the Blind-Spot Segment
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": seg_coords
+                    },
+                    "properties": {
+                        "is_blind_spot": True,
+                        "interpolated": True,
+                        "segment_name": f"Blind Zone: {node_a.get('camera_name', cam_a)} → {node_b.get('camera_name', cam_b)}",
+                        "source_camera": cam_a,
+                        "target_camera": cam_b,
+                        "gap_distance_km": gap_km,
+                        "confidence": interp.get("confidence", 0.85),
+                        "via_corridors": interp.get("via_corridors", [])
+                    }
+                })
+
+        # Main Historical Reconstructed Route LineString
+        if len(full_line_coordinates) >= 2:
             features.insert(0, {
                 "type": "Feature",
                 "geometry": {
                     "type": "LineString",
-                    "coordinates": line_coordinates
+                    "coordinates": full_line_coordinates
                 },
                 "properties": {
                     "route_for_plate": target_plate_clean,
-                    "total_waypoints": len(line_coordinates)
+                    "total_waypoints": len(full_line_coordinates),
+                    "is_historical_reconstruction": True
+                }
+            })
+
+        # --------------------------------------------------------------------
+        # 3. GNN / RNN PREDICTIVE TRAJECTORY FORECASTING (WHERE NEXT?)
+        # --------------------------------------------------------------------
+        forecast = self.forecaster.predict_next_intersections(ordered_nodes)
+
+        # Append Projected Future Path LineString (if available)
+        projected_coords = forecast.get("projected_path_coordinates", [])
+        if projected_coords and len(projected_coords) >= 2:
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": projected_coords
+                },
+                "properties": {
+                    "is_forecast": True,
+                    "route_type": "PREDICTED_FUTURE_PATH",
+                    "model": "GNN_RNN_HYBRID",
+                    "confidence": forecast.get("destination_forecast", {}).get("confidence", 0.78) if forecast.get("destination_forecast") else 0.75,
+                    "heading_deg": forecast.get("current_heading_deg", 0.0)
+                }
+            })
+
+        # Append Forecast Next Intersection Point Pins
+        for cand in forecast.get("next_intersections", []):
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [cand["longitude"], cand["latitude"]]
+                },
+                "properties": {
+                    "is_forecast_intersection": True,
+                    "camera_id": cand["camera_id"],
+                    "camera_name": cand["camera_name"],
+                    "corridor": cand["corridor"],
+                    "probability": cand["probability"],
+                    "confidence_pct": cand["confidence_pct"],
+                    "distance_km": cand["distance_km"],
+                    "eta_minutes": cand["eta_minutes"]
                 }
             })
 
@@ -380,7 +492,18 @@ class TrafficTrackingEngine:
                 "is_blacklisted": is_blacklisted,
                 "total_sightings": len(ordered_nodes),
                 "start_time": ordered_nodes[0]["timestamp"],
-                "end_time": ordered_nodes[-1]["timestamp"]
+                "end_time": ordered_nodes[-1]["timestamp"],
+                "speed": forecast.get("estimated_speed_kmh", 45.0),
+                "heading": forecast.get("current_heading_deg", 0.0),
+                "predictions": forecast,
+                "intercept_points": forecast.get("next_intersections", []),
+                "destination_forecast": forecast.get("destination_forecast"),
+                "blind_spot_analysis": {
+                    "has_blind_spots": len(blind_spot_segments) > 0,
+                    "total_blind_spots": len(blind_spot_segments),
+                    "total_blind_distance_km": round(total_blind_distance_km, 2),
+                    "segments": blind_spot_segments
+                }
             },
             "features": features
         }
@@ -515,33 +638,36 @@ class TrafficTrackingEngine:
                 
                 cone_polygon = [origin, p_left, p_center, p_right]
 
-                # Find Intercept Cameras inside the cone
-                cur.execute("SELECT camera_id, camera_name, latitude, longitude FROM cameras WHERE camera_id != %s;", (current['camera_id'],))
-                predictions = []
-                for cam in cur.fetchall():
-                    cam_distance = self._haversine_distance(origin[0], origin[1], cam['latitude'], cam['longitude'])
-                    cam_bearing = self._calculate_bearing(origin[0], origin[1], cam['latitude'], cam['longitude'])
-                    
-                    angle_diff = abs(heading - cam_bearing)
-                    if angle_diff > 180: angle_diff = 360 - angle_diff
-                        
-                    if angle_diff <= spread and cam_distance < cone_depth:
-                        predictions.append({
-                            "camera_name": cam['camera_name'],
-                            "latitude": cam['latitude'],
-                            "longitude": cam['longitude'],
-                            "distance_km": round(cam_distance, 2),
-                            "eta_minutes": round((cam_distance / speed_kmh) * 60, 1)
-                        })
+                # Run GNN/RNN Forecaster using the sightings
+                chronological_sightings = list(reversed(sightings))
+                forecast = self.forecaster.predict_next_intersections(chronological_sightings)
 
-                predictions.sort(key=lambda x: x['eta_minutes'])
-                
+                # Intercept Points from GNN / RNN Forecaster
+                gnn_intercepts = []
+                for pt in forecast.get("next_intersections", []):
+                    gnn_intercepts.append({
+                        "camera_id": pt["camera_id"],
+                        "camera_name": pt["camera_name"],
+                        "corridor": pt.get("corridor"),
+                        "latitude": pt["latitude"],
+                        "longitude": pt["longitude"],
+                        "distance_km": pt["distance_km"],
+                        "probability": pt["probability"],
+                        "confidence_pct": pt["confidence_pct"],
+                        "eta_minutes": pt["eta_minutes"]
+                    })
+
+                intercept_points = gnn_intercepts if gnn_intercepts else predictions[:4]
+
                 return {
                     "status": "success",
+                    "model_architecture": "GNN_RNN_HYBRID",
                     "current_heading": round(heading, 1),
                     "estimated_speed_kmh": round(speed_kmh, 1),
                     "cone_polygon": cone_polygon,
-                    "intercept_points": predictions[:3]
+                    "intercept_points": intercept_points,
+                    "destination_forecast": forecast.get("destination_forecast"),
+                    "projected_path_coordinates": forecast.get("projected_path_coordinates", [])
                 }
         finally:
             if conn: conn.close()
