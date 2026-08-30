@@ -5,7 +5,8 @@ from typing import List, Optional
 import requests
 
 
-BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000")
+BASE_URL = os.getenv("BACKEND_BASE_URL", "http://172.16.97.217:8000")
+DEFAULT_CAMERA_ID = os.getenv("DEFAULT_CAMERA_ID", "CAM_AN_02")
 
 
 def send_vehicle_event(
@@ -71,12 +72,12 @@ def send_vehicle_event(
 if __name__ == "__main__":
     sample_embedding = [0.142, -0.052, 0.811]
     send_vehicle_event(
-        camera_id="CAM01",
+        camera_id=DEFAULT_CAMERA_ID,
         plate_text="KA05AB1234",
         ocr_confidence=0.97,
         vehicle_class="SUV",
         vehicle_color="White",
         embedding=sample_embedding,
         plate_crop_url="https://example.com/plate_crop.jpg",
-        base_url="http://localhost:8000",
+        base_url=BASE_URL,
     )

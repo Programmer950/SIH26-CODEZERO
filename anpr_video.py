@@ -19,6 +19,8 @@ from collections import defaultdict, Counter
 from dotenv import load_dotenv
 from ultralytics import YOLO
 
+from event_client import send_vehicle_event
+
 load_dotenv()
 
 # ============================================================
@@ -28,8 +30,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 VEHICLE_MODEL_PATH = os.path.join(SCRIPT_DIR, "vehiclemodelv8m.pt")
 PLATE_MODEL_PATH = os.path.join(SCRIPT_DIR, "plate_model.pt")
-VIDEO_PATH = os.path.join(SCRIPT_DIR, "/Users/bahrudeen/Documents/5th sem /SIH/test video.mp4")  # <-- set your actual video path
-CAMERA_ID = "CAM01"
+VIDEO_PATH = os.path.join(SCRIPT_DIR, "test.mp4")
+CAMERA_ID = "CAM_AN_02"
 
 SAMPLE_EVERY_N = 5                  # how often (in frames) to attempt plate detection + OCR
 PLATE_CROP_PADDING = 10             # pixels of padding around detected plate box
@@ -223,6 +225,18 @@ def finalize_track(tid):
         "camera_id": CAMERA_ID,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
+    send_vehicle_event(
+        camera_id=CAMERA_ID,
+        plate_text=plate_text,
+        ocr_confidence=float(confidence),
+        timestamp=datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        vehicle_class=stable_class,
+        vehicle_color="Unknown",
+        embedding=None,
+        plate_crop_url=None,
+    )
+
     print(json.dumps(event, indent=2))
     return event
 
